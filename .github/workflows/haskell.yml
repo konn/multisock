@@ -92,7 +92,7 @@ jobs:
     - name: Restore ~/.cabal/store
       uses: actions/cache/restore@v3
       with:
-        path: ~/.local/state/cabal/store
+        path: ~/.cabal/store
         key: ${{steps.cache-keys.outputs.store}}
         restore-keys: ${{steps.cache-keys.outputs.store-restore}}
     - name: Restore dist-newstyle
