@@ -1,0 +1,13 @@
+{
+  "emeraldwalk.runonsave": {
+    "commands": [
+      {
+        "cmd": "hpack",
+        "isAsync": true,
+        "match": "(package\\.yaml|\\.l?hs)$"
+      }
+    ]
+  },
+  "haskell.plugin.semanticTokens.globalOn": true,
+  "editor.semanticHighlighting.enabled": true
+}

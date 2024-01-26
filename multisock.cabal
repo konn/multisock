@@ -1,0 +1,76 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.35.2.
+--
+-- see: https://github.com/sol/hpack
+
+name:           multisock
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/konn/multisock#readme>
+homepage:       https://github.com/konn/multisock#readme
+bug-reports:    https://github.com/konn/multisock/issues
+author:         Hiromi ISHII
+maintainer:     konn.jinro_at_gmail.com
+copyright:      2024 (c) Hiromi ISHII
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/konn/multisock
+
+library
+  exposed-modules:
+      Network.Socket.Multiplex
+      Network.Socket.Multiplex.VersionInfo
+      Network.Socket.Streaming
+  other-modules:
+      Paths_multisock
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -Wunused-packages
+  build-depends:
+      aeson
+    , base >=4.7 && <5
+    , bytestring
+    , fsnotify
+    , generic-lens
+    , githash
+    , optparse-applicative
+    , path
+    , path-io
+    , rio
+    , streaming-bytestring
+    , streaming-commons
+    , template-haskell
+    , yaml
+  default-language: Haskell2010
+
+executable multisock
+  main-is: Main.hs
+  other-modules:
+      Paths_multisock
+  hs-source-dirs:
+      app
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -Wunused-packages -threaded -O2 -rtsopts "-with-rtsopts=-N --nonmoving-gc"
+  build-depends:
+      base >=4.7 && <5
+    , multisock
+  default-language: Haskell2010
+
+test-suite multisock-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_multisock
+  hs-source-dirs:
+      test
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -Wunused-packages -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , multisock
+  default-language: Haskell2010
