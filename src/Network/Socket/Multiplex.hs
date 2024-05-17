@@ -19,6 +19,7 @@ module Network.Socket.Multiplex (
   appOptsP,
   AppConfig (..),
   defaultAppConfig,
+  SocketLocation (..),
 
   -- * Re-exports
   versionInfo,
@@ -28,9 +29,10 @@ import Control.Applicative
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as J
 import Data.Bifunctor qualified as Bi
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy.Char8 qualified as LBS8
 import Data.Generics.Labels ()
-import Data.Streaming.Network (clientSettingsUnix, runUnixClient, runUnixServer, serverSettingsUnix)
+import Data.Streaming.Network (AppData, AppDataUnix, HasReadWrite, HostPreference, clientSettingsTCP, clientSettingsUnix, runTCPClient, runTCPServer, runUnixClient, runUnixServer, serverSettingsTCP, serverSettingsUnix)
 import Data.Version (showVersion)
 import Data.Yaml qualified as Y
 import GitHash (giDescribe)
@@ -42,8 +44,11 @@ import Path.IO (XdgDirectory (..), createDirIfMissing, doesFileExist, getXdgDir,
 import RIO
 import RIO.FilePath (takeFileName)
 import RIO.Process (HasProcessContext (processContextL), ProcessContext, mkDefaultProcessContext, runProcess_)
+import RIO.Text qualified as T
+import RIO.Text.Partial qualified as T
 import RIO.Time
 import System.FSNotify qualified as FS
+import Text.Read (readEither)
 
 newtype AppOpts = AppOpts {config :: SomeBase File}
   deriving (Show, Eq, Ord, Generic)
@@ -90,9 +95,31 @@ defaultMain vinfo = do
   cfg <- getXdgDir XdgConfig Nothing
   defaultMainWith =<< Opts.execParser (appOptsP vinfo $ cfg </> [relfile|multisock.yml|])
 
+data SocketLocation
+  = UnixSocket !(Path Abs File)
+  | TCPSocket !HostPreference !Int
+  deriving (Eq, Ord, Generic)
+
+instance Show SocketLocation where
+  showsPrec _ (UnixSocket p) = showString $ fromAbsFile p
+  showsPrec _ (TCPSocket h p) = showString $ show h <> ":" <> show p
+
+instance ToJSON SocketLocation where
+  toJSON = \case
+    UnixSocket path -> J.toJSON $ fromAbsFile path
+    TCPSocket host port -> J.toJSON (show host <> ":" <> show port)
+
+instance FromJSON SocketLocation where
+  parseJSON = J.withText "absolute path or HOST:PORT" \text ->
+    UnixSocket <$> either (fail . displayException) pure (parseAbsFile (T.unpack text))
+      <|> do
+        [host, port] <- pure $ T.splitOn ":" text
+        p <- either fail pure $ readEither $ T.unpack port
+        pure $ TCPSocket (fromString $ T.unpack host) p
+
 data AppConfig = AppConfig
-  { origin :: Path Abs File
-  , proxies :: [Path Abs File]
+  { origin :: SocketLocation
+  , proxies :: [SocketLocation]
   , reconnect :: String
   }
   deriving (Generic)
@@ -101,10 +128,10 @@ data AppConfig = AppConfig
 defaultAppConfig :: AppConfig
 defaultAppConfig =
   AppConfig
-    { origin = [absfile|/path/to/original/sock|]
+    { origin = UnixSocket [absfile|/path/to/original/sock|]
     , proxies =
-        [ [absfile|/path/to/proxy1|]
-        , [absfile|/another/path/to/proxy2|]
+        [ UnixSocket [absfile|/path/to/proxy1|]
+        , UnixSocket [absfile|/another/path/to/proxy2|]
         ]
     , reconnect = "gpg-connect-agent reloadagent /bye"
     }
@@ -183,21 +210,56 @@ relay = do
       jobs <- async $ scheduleJobs cfg proxies
       body =<< atomically (takeTMVar cfgVar) `finally` cancel jobs
 
-scheduleJobs :: AppConfig -> [Path Abs File] -> RIO AppEnv ()
+scheduleJobs :: AppConfig -> [SocketLocation] -> RIO AppEnv ()
 scheduleJobs AppConfig {..} = mapConcurrently_ \dest -> do
-  logInfo $ "Socket created: " <> fromString (fromAbsFile dest)
-  withRunInIO \runInIO ->
-    runUnixServer (serverSettingsUnix $ fromAbsFile dest) \childData -> do
-      runInIO do
-        logInfo $ "New connection: " <> fromString (fromAbsFile dest)
-        there <- doesFileExist origin
-        unless there do
-          logWarn "No socket file found. Spawining a new one..."
-          runProcess_ $ fromString reconnect
+  logInfo $ "Socket created: " <> fromString (show dest)
+  runServer dest \childData -> do
+    logInfo $ "New connection: " <> fromString (show dest)
+    there <- isAlive origin
+    unless there $ fix \self -> do
+      logWarn "No socket file found. Spawining a new one..."
+      eith <- tryAny $ runProcess_ $ fromString reconnect
+      case eith of
+        Right () -> pure ()
+        Left err -> do
+          logError "Spawning failed! Retrying after 1 sec..."
+          logError $ fromString $ displayException err
+          threadDelay $ 10 ^ (6 :: Int)
+          self
 
-      runUnixClient (clientSettingsUnix $ fromAbsFile origin) \superData -> runInIO do
-        let upstream =
-              fromAppData superData & putAppData childData
-            downstream =
-              fromAppData childData & putAppData superData
-        upstream `race_` downstream
+    runClient origin \superData -> do
+      let upstream =
+            fromAppData superData & putAppData childData
+          downstream =
+            fromAppData childData & putAppData superData
+      upstream `race_` downstream
+
+isAlive :: SocketLocation -> RIO AppEnv Bool
+isAlive (UnixSocket dest) = doesFileExist dest
+isAlive TCPSocket {} = pure True
+
+runServer :: SocketLocation -> (forall appData. (HasReadWrite appData) => appData -> RIO env ()) -> RIO env ()
+runServer (UnixSocket dest) act =
+  withRunInIO \runInIO ->
+    runUnixServer (serverSettingsUnix $ fromAbsFile dest) $
+      runInIO . act @AppDataUnix
+runServer (TCPSocket host p) act =
+  withRunInIO \runInIO ->
+    runTCPServer (serverSettingsTCP p host) $ runInIO . act @AppData
+
+runClient ::
+  (HasLogFunc env) =>
+  SocketLocation ->
+  (forall appData. (HasReadWrite appData) => appData -> RIO env ()) ->
+  RIO env ()
+runClient (UnixSocket dest) act =
+  withRunInIO \runInIO ->
+    runUnixClient (clientSettingsUnix $ fromAbsFile dest) $ runInIO . act @AppDataUnix
+runClient (TCPSocket host p) act = fix \self ->
+  withRunInIO \runInIO ->
+    runTCPClient (clientSettingsTCP p $ BS8.pack $ show host) (runInIO . act @AppData)
+      `catch` \(err :: IOException) -> runInIO do
+        logError "Spawning failed! Retrying after 1 sec..."
+        logError $ fromString $ displayException err
+        threadDelay $ 10 ^ (6 :: Int)
+        self
